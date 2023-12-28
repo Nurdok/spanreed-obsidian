@@ -2,16 +2,16 @@ import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Set
 
 // Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
+interface SpanreedSettings {
 	spanreedUserId: number;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
+const DEFAULT_SETTINGS: SpanreedSettings = {
 	spanreedUserId: -1,
 }
 
 export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+	settings: SpanreedSettings;
 
 	async onload() {
 		await this.loadSettings();
@@ -96,9 +96,17 @@ class SampleModal extends Modal {
 		super(app);
 	}
 
-	onOpen() {
+	async onOpen() {
 		const {contentEl} = this;
-		contentEl.setText('Woah!');
+		contentEl.createEl('h1', {text: 'Book Query'});
+		const dv = this.app.plugins.plugins.dataview.api;
+		console.log("before query");
+		dv.tryQuery("table without id title from #book").then((res) => {
+			contentEl.createEl('h2', {text: 'Your books'});
+			res.values.forEach((book) => {
+				contentEl.createEl('p', {text: book[0]});
+			});
+		});
 	}
 
 	onClose() {
