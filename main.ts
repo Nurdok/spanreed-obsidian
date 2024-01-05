@@ -125,11 +125,15 @@ export default class SpanreedPlugin extends Plugin {
 				}
 				let request: SpanreedRpcRequest = JSON.parse(res.element);
 				console.log("Got request: ", request);
+				console.log("Got method: ", request.method);
 
 				switch (request.method) {
 					case "generateDailyNote":
-						this.app.commands.executeCommandById("daily-notes:generate-daily-note");
+						console.log("generating daily note")
+						this.app.commands.executeCommandById("daily-notes");
 						break;
+					default:
+							console.log("unknown method: ", request.method);
 				}
 			});
 		console.log("done polling redis task message queue")
