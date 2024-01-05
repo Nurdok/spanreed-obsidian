@@ -20,7 +20,6 @@ const DEFAULT_SETTINGS: SpanreedSettings = {
 export default class SpanreedPlugin extends Plugin {
 	settings: SpanreedSettings;
 	redisClient: RedisClientType<any, any, any>;
-	pollTimer: number;
 
 	async onload() {
 		await this.loadSettings();
