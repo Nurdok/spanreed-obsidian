@@ -1,17 +1,26 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, removeIcon, Setting} from 'obsidian';
+import { createClient, RedisClientType } from "redis";
 
-// Remember to rename these classes and interfaces!
+
+interface SpanreedRpcRequest {
+	method: string;
+	params: any[];
+}
 
 interface SpanreedSettings {
 	spanreedUserId: number;
+	redis_url: string;
 }
 
 const DEFAULT_SETTINGS: SpanreedSettings = {
 	spanreedUserId: -1,
+	redis_url: "",
 }
 
-export default class MyPlugin extends Plugin {
+export default class SpanreedPlugin extends Plugin {
 	settings: SpanreedSettings;
+	redisClient: RedisClientType<any, any, any>;
+	pollTimer: number;
 
 	async onload() {
 		await this.loadSettings();
@@ -66,7 +75,7 @@ export default class MyPlugin extends Plugin {
 		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new SpanreedSettingsTab(this.app, this));
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
@@ -75,7 +84,16 @@ export default class MyPlugin extends Plugin {
 		});
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 0));
+
+		if (this.settings.spanreedUserId === -1) {
+			new Notice("Please set your Spanreed user ID in the plugin settings.");
+			return;
+		}
+		if (this.settings.redis_url === "") {
+			new Notice("Please set your Redis URL in the plugin settings.");
+			return;
+		}
 	}
 
 	onunload() {
@@ -88,6 +106,34 @@ export default class MyPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	async pollRedisTaskMessageQueue() {
+		if (typeof(this.redisClient) === "undefined") {
+			this.redisClient = createClient({
+				url: this.settings.redis_url,
+			});
+			await this.redisClient.connect();
+		}
+
+		console.log("polling redis task message queue")
+		await this.redisClient.blPop(`obsidian-plugin-tasks:${this.settings.spanreedUserId}`, 0)
+			.then((res) => {
+				if (res === null) {
+					console.log("blpop returned null");
+					return;
+				}
+				let request: SpanreedRpcRequest = JSON.parse(res.element);
+				console.log("Got request: ", request);
+
+				switch (request.method) {
+					case "generateDailyNote":
+						this.app.commands.executeCommandById("daily-notes:generate-daily-note");
+						break;
+				}
+			});
+		console.log("done polling redis task message queue")
+		this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 10 * 1000));
 	}
 }
 
@@ -113,12 +159,13 @@ class SampleModal extends Modal {
 		const {contentEl} = this;
 		contentEl.empty();
 	}
+
 }
 
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+class SpanreedSettingsTab extends PluginSettingTab {
+	plugin: SpanreedPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: SpanreedPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -136,6 +183,17 @@ class SampleSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.spanreedUserId.toString())
 				.onChange(async (value) => {
 					this.plugin.settings.spanreedUserId = parseInt(value);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Redis URL')
+			.setDesc('Your Redis URL')
+			.addText(text => text
+				.setPlaceholder('Enter your Redis URL')
+				.setValue(this.plugin.settings.redis_url)
+				.onChange(async (value) => {
+					this.plugin.settings.redis_url = value;
 					await this.plugin.saveSettings();
 				}));
 	}
