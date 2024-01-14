@@ -3,8 +3,14 @@ import { createClient, RedisClientType } from "redis";
 
 
 interface SpanreedRpcRequest {
+	request_id: string;
 	method: string;
 	params: any[];
+}
+
+interface SpanreedRpcResponse {
+	success: boolean;
+	result: any;
 }
 
 interface SpanreedSettings {
@@ -115,21 +121,21 @@ export default class SpanreedPlugin extends Plugin {
 			await this.redisClient.connect();
 		}
 
-		console.log("polling redis task message queue")
 		await this.redisClient.blPop(`obsidian-plugin-tasks:${this.settings.spanreedUserId}`, 0)
-			.then((res) => {
+			.then(async (res) => {
 				if (res === null) {
-					console.log("blpop returned null");
 					return;
 				}
 				let request: SpanreedRpcRequest = JSON.parse(res.element);
-				console.log("Got request: ", request);
-				console.log("Got method: ", request.method);
 
 				switch (request.method) {
 					case "generate-daily-note":
 						console.log("generating daily note")
 						this.app.commands.executeCommandById("daily-notes");
+						let responseQueue = `obsidian-plugin-tasks:${this.settings.spanreedUserId}:${request.request_id}`;
+						let response: SpanreedRpcResponse = {"success": true, "result": null};
+						await this.redisClient.lPush(responseQueue, JSON.stringify(response));
+						console.log("Send success response to redis queue: " + responseQueue);
 						break;
 					default:
 							console.log("unknown method: ", request.method);
