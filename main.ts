@@ -127,7 +127,7 @@ export default class SpanreedPlugin extends Plugin {
 				console.log("Got method: ", request.method);
 
 				switch (request.method) {
-					case "generateDailyNote":
+					case "generate-daily-note":
 						console.log("generating daily note")
 						this.app.commands.executeCommandById("daily-notes");
 						break;
