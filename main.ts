@@ -1,4 +1,4 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, removeIcon, Setting} from 'obsidian';
+import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile} from 'obsidian';
 import { createClient, RedisClientType } from "redis";
 
 
@@ -55,8 +55,7 @@ export default class SpanreedPlugin extends Plugin {
 			id: 'sample-editor-command',
 			name: 'Sample editor command',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
+				this.app.commands.executeCommandById("markdown:add-metadata-property");
 			}
 		});
 		// This adds a complex command that can check whether the current state of the app allows execution of the command
@@ -127,19 +126,81 @@ export default class SpanreedPlugin extends Plugin {
 					return;
 				}
 				let request: SpanreedRpcRequest = JSON.parse(res.element);
+				let responseQueue = `obsidian-plugin-tasks:${this.settings.spanreedUserId}:${request.request_id}`;
+				let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
 
 				switch (request.method) {
 					case "generate-daily-note":
 						console.log("generating daily note")
 						this.app.commands.executeCommandById("daily-notes");
-						let responseQueue = `obsidian-plugin-tasks:${this.settings.spanreedUserId}:${request.request_id}`;
-						let response: SpanreedRpcResponse = {"success": true, "result": null};
-						await this.redisClient.lPush(responseQueue, JSON.stringify(response));
-						console.log("Send success response to redis queue: " + responseQueue);
+						response = {"success": true, "result": null};
+						break;
+					case "modify-property":
+						let filepath: string = request.params.filepath;
+						let tfile: TFile | null = null;
+						for (let file of this.app.vault.getMarkdownFiles()) {
+							if (file.path == filepath) {
+								tfile = file;
+								break;
+							}
+							console.log("no match for file: ", file.path, " vs ", filepath);
+						}
+						if (tfile === null) {
+							console.log("file not found: ", filepath);
+							response = {"success": false, "result": "file not found"};
+							break;
+						}
+						let property = request.params.property;
+						switch (request.params.operation) {
+							case "addToList":
+								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									if (typeof(frontmatter[property]) === "undefined") {
+										frontmatter[property] = [];
+									}
+									if (!Array.isArray(frontmatter[property])) {
+										response = {"success": false, "result": "property is not a list"};
+										return;
+									}
+									if (frontmatter[property].indexOf(request.params.value) <= -1) {
+										frontmatter[property].push(request.params.value);
+									}
+									response = {"success": true, result: null};
+								});
+								break;
+							case "removeFromList":
+								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									if (typeof(frontmatter[property]) === "undefined") {
+										return;
+									}
+									if (!Array.isArray(frontmatter[property])) {
+										response = {"success": false, "result": "property is not a list"};
+										return;
+									}
+									let index = frontmatter[property].indexOf(request.params.value);
+									if (index > -1) {
+										frontmatter[property].splice(index, 1);
+									}
+									response = {"success": true, result: null};
+								});
+								break;
+							case "setSingleValue":
+								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									frontmatter[property] = request.params.value;
+								});
+								response = {"success": true, result: null};
+								break;
+							case "deleteProperty":
+								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									delete frontmatter[property];
+								});
+								response = {"success": true, result: null};
+								break;
+						}
 						break;
 					default:
-							console.log("unknown method: ", request.method);
+						response = {"success": false, "result": "unknown method"};
 				}
+				await this.redisClient.lPush(responseQueue, JSON.stringify(response));
 			});
 		console.log("done polling redis task message queue")
 		this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 10 * 1000));
