@@ -8,6 +8,13 @@ interface SpanreedRpcRequest {
 	params: any[];
 }
 
+interface ModifyPropertyParams {
+	filepath: string;
+	property: string;
+	operation: string;
+	value: any;
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
@@ -143,15 +150,14 @@ export default class SpanreedPlugin extends Plugin {
 								tfile = file;
 								break;
 							}
-							console.log("no match for file: ", file.path, " vs ", filepath);
 						}
 						if (tfile === null) {
-							console.log("file not found: ", filepath);
 							response = {"success": false, "result": "file not found"};
 							break;
 						}
-						let property = request.params.property;
-						switch (request.params.operation) {
+						const params: ModifyPropertyParams = request.params;
+						const property = params.property;
+						switch (params.operation) {
 							case "addToList":
 								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 									if (typeof(frontmatter[property]) === "undefined") {
@@ -161,8 +167,8 @@ export default class SpanreedPlugin extends Plugin {
 										response = {"success": false, "result": "property is not a list"};
 										return;
 									}
-									if (frontmatter[property].indexOf(request.params.value) <= -1) {
-										frontmatter[property].push(request.params.value);
+									if (frontmatter[property].indexOf(params.value) <= -1) {
+										frontmatter[property].push(params.value);
 									}
 									response = {"success": true, result: null};
 								});
@@ -176,7 +182,7 @@ export default class SpanreedPlugin extends Plugin {
 										response = {"success": false, "result": "property is not a list"};
 										return;
 									}
-									let index = frontmatter[property].indexOf(request.params.value);
+									let index = frontmatter[property].indexOf(params.value);
 									if (index > -1) {
 										frontmatter[property].splice(index, 1);
 									}
@@ -185,7 +191,7 @@ export default class SpanreedPlugin extends Plugin {
 								break;
 							case "setSingleValue":
 								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-									frontmatter[property] = request.params.value;
+									frontmatter[property] = params.value;
 								});
 								response = {"success": true, result: null};
 								break;
