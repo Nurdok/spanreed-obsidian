@@ -1,5 +1,5 @@
 import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile} from 'obsidian';
-import { createClient, RedisClientType } from "redis";
+import {createClient, RedisClientType} from "redis";
 
 
 interface SpanreedRpcRequest {
@@ -15,9 +15,16 @@ interface ModifyPropertyParams {
 	value: any;
 }
 
+interface QueryDataviewParams {
+	query: string;
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
+}
+
+interface QueryDataviewResult {
 }
 
 interface SpanreedSettings {
@@ -120,7 +127,7 @@ export default class SpanreedPlugin extends Plugin {
 	}
 
 	async pollRedisTaskMessageQueue() {
-		if (typeof(this.redisClient) === "undefined") {
+		if (typeof (this.redisClient) === "undefined") {
 			this.redisClient = createClient({
 				url: this.settings.redis_url,
 			});
@@ -137,12 +144,13 @@ export default class SpanreedPlugin extends Plugin {
 				let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
 
 				switch (request.method) {
-					case "generate-daily-note":
+					case "generate-daily-note": {
 						console.log("generating daily note")
 						this.app.commands.executeCommandById("daily-notes");
 						response = {"success": true, "result": null};
 						break;
-					case "modify-property":
+					}
+					case "modify-property": {
 						let filepath: string = request.params.filepath;
 						let tfile: TFile | null = null;
 						for (let file of this.app.vault.getMarkdownFiles()) {
@@ -159,8 +167,8 @@ export default class SpanreedPlugin extends Plugin {
 						const property = params.property;
 						switch (params.operation) {
 							case "addToList":
-								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-									if (typeof(frontmatter[property]) === "undefined") {
+								await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									if (typeof (frontmatter[property]) === "undefined") {
 										frontmatter[property] = [];
 									}
 									if (!Array.isArray(frontmatter[property])) {
@@ -174,8 +182,8 @@ export default class SpanreedPlugin extends Plugin {
 								});
 								break;
 							case "removeFromList":
-								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-									if (typeof(frontmatter[property]) === "undefined") {
+								await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									if (typeof (frontmatter[property]) === "undefined") {
 										return;
 									}
 									if (!Array.isArray(frontmatter[property])) {
@@ -190,21 +198,41 @@ export default class SpanreedPlugin extends Plugin {
 								});
 								break;
 							case "setSingleValue":
-								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+								await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 									frontmatter[property] = params.value;
 								});
 								response = {"success": true, result: null};
 								break;
 							case "deleteProperty":
-								this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+								await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 									delete frontmatter[property];
 								});
 								response = {"success": true, result: null};
 								break;
+							case "getProperty":
+								// TODO: there's a better API for this, but I CBA right now
+								await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+									let value = frontmatter[property];
+									if (typeof (value) === "undefined") {
+										value = null;
+									}
+									response = {"success": true, result: value}
+								});
+								break;
 						}
 						break;
+					}
+					case "query-dataview": {
+						const dv = this.app.plugins.plugins.dataview.api;
+						const params: QueryDataviewParams = request.params;
+						const query = params.query;
+						await dv.tryQuery(query).then((result: any) => {
+							response = {"success": true, "result": result};
+						});
+						break;
+					}
 					default:
-						response = {"success": false, "result": "unknown method"};
+						response = {"success": false, "result": `unknown method ${request.method}`};
 				}
 				await this.redisClient.lPush(responseQueue, JSON.stringify(response));
 			});
