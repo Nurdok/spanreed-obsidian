@@ -23,5 +23,13 @@
   },
   "dependencies": {
     "redis": "^4.6.12"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nurdok/spanreed-obsidian.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nurdok/spanreed-obsidian/issues"
+  },
+  "homepage": "https://github.com/Nurdok/spanreed-obsidian#readme"
 }
