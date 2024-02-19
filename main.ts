@@ -107,6 +107,7 @@ export default class SpanreedPlugin extends Plugin {
 				let responseQueue = `obsidian-plugin-tasks:${this.settings.spanreedUserId}:${request.request_id}`;
 				let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
 
+				console.log("got request", request)
 				switch (request.method) {
 					case "generate-daily-note": {
 						console.log("generating daily note")
