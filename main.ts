@@ -2,6 +2,9 @@ import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Sett
 import {createClient, RedisClientType} from "redis";
 
 
+type SpanreedMonitorEvent =
+	{ user: number } & ({ kind: 'watchdog' } | { kind: 'error', message: string });
+
 interface SpanreedRpcRequest {
 	request_id: string;
 	method: string;
@@ -209,24 +212,47 @@ export default class SpanreedPlugin extends Plugin {
 		return response
 	}
 
+	async createRedisClient(redisUrl: string) {
+		this.redisClient = createClient({
+			url: redisUrl
+		});
+		this.redisClient.on('error', (err) => {
+			this.sendRedisErrorToSpanreedMonitor(err.message);
+		});
+		await this.redisClient.connect();
+		this.lastUsedRedisUrl = redisUrl
+	}
+
+	async sendRedisErrorToSpanreedMonitor(message: string) {
+		const spanreedUserId = this.getActiveConnectionSettings().spanreedUserId;
+		const monitorQueue = `obsidian-plugin-monitor:${spanreedUserId}`
+		await this.ensureRedisClient();
+		await this.redisClient.lPush(monitorQueue, JSON.stringify({
+			user: spanreedUserId,
+			kind: 'error',
+			message: message
+		}));
+	}
+
+	async sendSpanreedWatchdogEvent() {
+		const spanreedUserId = this.getActiveConnectionSettings().spanreedUserId;
+		const monitorQueue = `obsidian-plugin-monitor:${spanreedUserId}`
+		await this.ensureRedisClient();
+		await this.redisClient.lPush(monitorQueue, JSON.stringify({user: spanreedUserId, kind: 'watchdog'}));
+	}
+
 	async ensureRedisClient() {
 		const activeConnectionSettings = this.getActiveConnectionSettings()
-		if (this.lastUsedRedisUrl === undefined ||
+		if (this.redisClient === undefined || this.lastUsedRedisUrl === undefined ||
 			(activeConnectionSettings.redisUrl !== this.lastUsedRedisUrl)) {
-				if (this.redisClient !== undefined) {
-					await this.redisClient.quit();
-				}
-				this.redisClient = createClient({
-					url: activeConnectionSettings.redisUrl,
-				});
-				await this.redisClient.connect();
-				this.lastUsedRedisUrl = activeConnectionSettings.redisUrl
+			await this.createRedisClient(activeConnectionSettings.redisUrl);
 		}
 	}
 
 	async pollRedisTaskMessageQueue() {
 		try {
 			await this.ensureRedisClient()
+			await this.sendSpanreedWatchdogEvent()
 			console.log("polling redis task message queue")
 
 			const spanreedUserId = this.getActiveConnectionSettings().spanreedUserId;
