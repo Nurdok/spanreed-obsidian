@@ -28,6 +28,10 @@ interface ReadFileParams {
 	format: "text" | "binary";
 }
 
+interface ListDirParams {
+	dirpath: string;
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
@@ -234,6 +238,17 @@ export default class SpanreedPlugin extends Plugin {
 				}
 				response = {"success": true, "result": {content, encoding}}
 				break;
+			}
+			case 'list-dir': {
+				const { dirpath } = request.params as ListDirParams
+				const filepaths: string[] = []
+				for (let file of this.app.vault.getFiles()) {
+					if (file.path.startsWith(dirpath)) {
+						filepaths.push(file.path)
+					}
+				}
+				response = {"success": true, "result": filepaths}
+				break
 			}
 			default:
 				response = {"success": false, "result": `unknown method ${request.method}`};
