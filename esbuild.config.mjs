@@ -16,6 +16,8 @@ const context = await esbuild.context({
 		js: banner,
 	},
 	entryPoints: ["main.ts"],
+	// Note: this should be removed for mobile plugins.
+	platform: "node",
 	bundle: true,
 	external: [
 		"obsidian",

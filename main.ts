@@ -1,5 +1,6 @@
 import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile} from 'obsidian';
 import {createClient, RedisClientType} from "redis";
+import { Buffer } from "node:buffer"
 
 
 type SpanreedMonitorEvent =
@@ -8,7 +9,7 @@ type SpanreedMonitorEvent =
 interface SpanreedRpcRequest {
 	request_id: string;
 	method: string;
-	params: any[];
+	params: any;
 }
 
 interface ModifyPropertyParams {
@@ -20,6 +21,11 @@ interface ModifyPropertyParams {
 
 interface QueryDataviewParams {
 	query: string;
+}
+
+interface ReadFileParams {
+	filepath: string;
+	format: "text" | "binary";
 }
 
 interface SpanreedRpcResponse {
@@ -112,6 +118,15 @@ export default class SpanreedPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	getFile(filepath: string): TFile | undefined {
+		for (let file of this.app.vault.getFiles()) {
+			if (file.path == filepath) {
+				return file
+			}
+		}
+		return undefined
+	}
+
 	getActiveConnectionSettings(): ConnectionSettings {
 		return this.settings.connectionSettings[this.settings.activeEnvironment];
 	}
@@ -127,13 +142,7 @@ export default class SpanreedPlugin extends Plugin {
 			}
 			case "modify-property": {
 				let filepath: string = request.params.filepath;
-				let tfile: TFile | null = null;
-				for (let file of this.app.vault.getMarkdownFiles()) {
-					if (file.path == filepath) {
-						tfile = file;
-						break;
-					}
-				}
+				let tfile: TFile | undefined = this.getFile(filepath)
 				if (tfile === null) {
 					response = {"success": false, "result": "file not found"};
 					break;
@@ -206,6 +215,26 @@ export default class SpanreedPlugin extends Plugin {
 				});
 				break;
 			}
+			case 'read-file': {
+				const {filepath, format} = request.params as ReadFileParams
+				let tfileToRead: TFile | undefined = this.getFile(filepath)
+				if (tfileToRead === undefined) {
+					response = {"success": false, "result": "file not found"};
+					break;
+				}
+				let content: string
+				let encoding: string
+				if (format === 'binary') {
+					const buff: Buffer = Buffer.from(await this.app.vault.readBinary(tfileToRead))
+					content = buff.toString('base64')
+					encoding = 'base64'
+				} else {
+					content = await this.app.vault.read(tfileToRead)
+					encoding = 'utf-8'
+				}
+				response = {"success": true, "result": {content, encoding}}
+				break;
+			}
 			default:
 				response = {"success": false, "result": `unknown method ${request.method}`};
 		}
@@ -276,7 +305,7 @@ export default class SpanreedPlugin extends Plugin {
 		} catch (e) {
 			console.log("error polling redis task message queue", e)
 		} finally {
-			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 10 * 1000));
+			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 0));
 		}
 	}
 }
