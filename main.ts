@@ -32,6 +32,11 @@ interface ListDirParams {
 	dirpath: string;
 }
 
+interface MoveFileParams {
+	from: string;
+	to: string
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
@@ -250,6 +255,16 @@ export default class SpanreedPlugin extends Plugin {
 				response = {"success": true, "result": filepaths}
 				break
 			}
+			case 'move-file':
+				const {from, to} = request.params as MoveFileParams
+				const fromfile: TFile | undefined = this.getFile(from)
+				if (fromfile === undefined) {
+					response = {"success": false, "result": `File ${from} doesn't exist`}
+					break
+				}
+				await this.app.vault.rename(fromfile, to)
+				response = {"success": true, "result": null};
+				break
 			default:
 				response = {"success": false, "result": `unknown method ${request.method}`};
 		}
