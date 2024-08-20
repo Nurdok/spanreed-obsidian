@@ -202,6 +202,7 @@ export default class SpanreedPlugin extends Plugin {
 					}
 					return {"success": true, result: value}
 				});
+				break;
 			default:
 				return {"success": false, "result": 'unknown modify-property operation'};
 		}
@@ -257,26 +258,30 @@ export default class SpanreedPlugin extends Plugin {
 
 	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
 		let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
-		switch (request.method) {
-			case "generate-daily-note": {
-				return await this.handleCommandGenerateDailyNote()
+		try {
+			switch (request.method) {
+				case "generate-daily-note": {
+					return await this.handleCommandGenerateDailyNote()
+				}
+				case "modify-property": {
+					return await this.handleCommandModifyProperty(request.params);
+				}
+				case "query-dataview": {
+					return await this.handleCommandQueryDataview(request.params);
+				}
+				case 'read-file': {
+					return await this.handleCommandReadFile(request.params);
+				}
+				case 'list-dir': {
+					return await this.handleCommandListDir(request.params);
+				}
+				case 'move-file':
+					return await this.handleCommandMoveFile(request.params)
+				default:
+					return {"success": false, "result": `unknown method ${request.method}`};
 			}
-			case "modify-property": {
-				return await this.handleCommandModifyProperty(request.params);
-			}
-			case "query-dataview": {
-				return await this.handleCommandQueryDataview(request.params);
-			}
-			case 'read-file': {
-				return await this.handleCommandReadFile(request.params);
-			}
-			case 'list-dir': {
-				return await this.handleCommandListDir(request.params);
-			}
-			case 'move-file':
-				return await this.handleCommandMoveFile(request.params)
-			default:
-				return {"success": false, "result": `unknown method ${request.method}`};
+		} catch (e) {
+			return {"success": false, "result": `Request ${request.method} failed: ${e}`};
 		}
 	}
 
