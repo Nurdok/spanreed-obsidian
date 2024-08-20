@@ -1,6 +1,6 @@
 import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile} from 'obsidian';
 import {createClient, RedisClientType} from "redis";
-import { Buffer } from "node:buffer"
+import {Buffer} from "node:buffer"
 
 
 type SpanreedMonitorEvent =
@@ -140,135 +140,144 @@ export default class SpanreedPlugin extends Plugin {
 		return this.settings.connectionSettings[this.settings.activeEnvironment];
 	}
 
+	async handleCommandGenerateDailyNote(): Promise<SpanreedRpcResponse> {
+		console.log("generating daily note")
+		this.app.commands.executeCommandById("daily-notes");
+		return {"success": true, "result": null};
+	}
+
+	async handleCommandModifyProperty(params: ModifyPropertyParams): Promise<SpanreedRpcResponse> {
+		let filepath: string = params.filepath;
+		let tfile: TFile | undefined = this.getFile(filepath)
+		if (tfile === undefined) {
+			return {"success": false, "result": "file not found"};
+		}
+		const property = params.property;
+		switch (params.operation) {
+			case "addToList":
+				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+					if (typeof (frontmatter[property]) === "undefined") {
+						frontmatter[property] = [];
+					}
+					if (!Array.isArray(frontmatter[property])) {
+						return {"success": false, "result": "property is not a list"};
+					}
+					if (frontmatter[property].indexOf(params.value) <= -1) {
+						frontmatter[property].push(params.value);
+					}
+					return {"success": true, result: null};
+				});
+				break;
+			case "removeFromList":
+				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+					if (typeof (frontmatter[property]) === "undefined") {
+						return;
+					}
+					if (!Array.isArray(frontmatter[property])) {
+						return {"success": false, "result": "property is not a list"};
+					}
+					let index = frontmatter[property].indexOf(params.value);
+					if (index > -1) {
+						frontmatter[property].splice(index, 1);
+					}
+					return {"success": true, result: null};
+				});
+				break;
+			case "setSingleValue":
+				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+					frontmatter[property] = params.value;
+				});
+				return {"success": true, result: null};
+			case "deleteProperty":
+				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+					delete frontmatter[property];
+				});
+				return {"success": true, result: null};
+			case "getProperty":
+				// TODO: there's a better API for this, but I CBA right now
+				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
+					let value = frontmatter[property];
+					if (typeof (value) === "undefined") {
+						value = null;
+					}
+					return {"success": true, result: value}
+				});
+			default:
+				return {"success": false, "result": 'unknown modify-property operation'};
+		}
+	}
+
+	async handleCommandQueryDataview({query}: QueryDataviewParams): Promise<SpanreedRpcResponse> {
+		const dv = this.app.plugins.plugins.dataview.api;
+		return dv.tryQuery(query)
+			.then((result: any) => {
+				return {"success": true, "result": result};
+			})
+			.catch((e: Error) => {
+				return {"success": false, "result": e.message};
+			});
+	}
+
+	async handleCommandReadFile({filepath, format}: ReadFileParams): Promise<SpanreedRpcResponse> {
+		let tfileToRead: TFile | undefined = this.getFile(filepath)
+		if (tfileToRead === undefined) {
+			return {"success": false, "result": "file not found"};
+		}
+		let content: string
+		let encoding: string
+		if (format === 'binary') {
+			const buff: Buffer = Buffer.from(await this.app.vault.readBinary(tfileToRead))
+			content = buff.toString('base64')
+			encoding = 'base64'
+		} else {
+			content = await this.app.vault.read(tfileToRead)
+			encoding = 'utf-8'
+		}
+		return {"success": true, "result": {content, encoding}}
+	}
+
+	async handleCommandListDir({dirpath}: ListDirParams): Promise<SpanreedRpcResponse> {
+		const filepaths: string[] = []
+		for (let file of this.app.vault.getFiles()) {
+			if (file.path.startsWith(dirpath)) {
+				filepaths.push(file.path)
+			}
+		}
+		return {"success": true, "result": filepaths}
+	}
+
+	async handleCommandMoveFile({from, to}: MoveFileParams): Promise<SpanreedRpcResponse> {
+		const fromfile: TFile | undefined = this.getFile(from)
+		if (fromfile === undefined) {
+			return {"success": false, "result": `File ${from} doesn't exist`}
+		}
+		await this.app.vault.rename(fromfile, to)
+		return {"success": true, "result": null}
+	}
+
 	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
 		let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
 		switch (request.method) {
 			case "generate-daily-note": {
-				console.log("generating daily note")
-				this.app.commands.executeCommandById("daily-notes");
-				response = {"success": true, "result": null};
-				break;
+				return await this.handleCommandGenerateDailyNote()
 			}
 			case "modify-property": {
-				let filepath: string = request.params.filepath;
-				let tfile: TFile | undefined = this.getFile(filepath)
-				if (tfile === null) {
-					response = {"success": false, "result": "file not found"};
-					break;
-				}
-				const params: ModifyPropertyParams = request.params;
-				const property = params.property;
-				switch (params.operation) {
-					case "addToList":
-						await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-							if (typeof (frontmatter[property]) === "undefined") {
-								frontmatter[property] = [];
-							}
-							if (!Array.isArray(frontmatter[property])) {
-								response = {"success": false, "result": "property is not a list"};
-								return;
-							}
-							if (frontmatter[property].indexOf(params.value) <= -1) {
-								frontmatter[property].push(params.value);
-							}
-							response = {"success": true, result: null};
-						});
-						break;
-					case "removeFromList":
-						await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-							if (typeof (frontmatter[property]) === "undefined") {
-								return;
-							}
-							if (!Array.isArray(frontmatter[property])) {
-								response = {"success": false, "result": "property is not a list"};
-								return;
-							}
-							let index = frontmatter[property].indexOf(params.value);
-							if (index > -1) {
-								frontmatter[property].splice(index, 1);
-							}
-							response = {"success": true, result: null};
-						});
-						break;
-					case "setSingleValue":
-						await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-							frontmatter[property] = params.value;
-						});
-						response = {"success": true, result: null};
-						break;
-					case "deleteProperty":
-						await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-							delete frontmatter[property];
-						});
-						response = {"success": true, result: null};
-						break;
-					case "getProperty":
-						// TODO: there's a better API for this, but I CBA right now
-						await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-							let value = frontmatter[property];
-							if (typeof (value) === "undefined") {
-								value = null;
-							}
-							response = {"success": true, result: value}
-						});
-						break;
-				}
-				break;
+				return await this.handleCommandModifyProperty(request.params);
 			}
 			case "query-dataview": {
-				const dv = this.app.plugins.plugins.dataview.api;
-				const params: QueryDataviewParams = request.params;
-				const query = params.query;
-				await dv.tryQuery(query).then((result: any) => {
-					response = {"success": true, "result": result};
-				});
-				break;
+				return await this.handleCommandQueryDataview(request.params);
 			}
 			case 'read-file': {
-				const {filepath, format} = request.params as ReadFileParams
-				let tfileToRead: TFile | undefined = this.getFile(filepath)
-				if (tfileToRead === undefined) {
-					response = {"success": false, "result": "file not found"};
-					break;
-				}
-				let content: string
-				let encoding: string
-				if (format === 'binary') {
-					const buff: Buffer = Buffer.from(await this.app.vault.readBinary(tfileToRead))
-					content = buff.toString('base64')
-					encoding = 'base64'
-				} else {
-					content = await this.app.vault.read(tfileToRead)
-					encoding = 'utf-8'
-				}
-				response = {"success": true, "result": {content, encoding}}
-				break;
+				return await this.handleCommandReadFile(request.params);
 			}
 			case 'list-dir': {
-				const { dirpath } = request.params as ListDirParams
-				const filepaths: string[] = []
-				for (let file of this.app.vault.getFiles()) {
-					if (file.path.startsWith(dirpath)) {
-						filepaths.push(file.path)
-					}
-				}
-				response = {"success": true, "result": filepaths}
-				break
+				return await this.handleCommandListDir(request.params);
 			}
 			case 'move-file':
-				const {from, to} = request.params as MoveFileParams
-				const fromfile: TFile | undefined = this.getFile(from)
-				if (fromfile === undefined) {
-					response = {"success": false, "result": `File ${from} doesn't exist`}
-					break
-				}
-				await this.app.vault.rename(fromfile, to)
-				response = {"success": true, "result": null};
-				break
+				return await this.handleCommandMoveFile(request.params)
 			default:
-				response = {"success": false, "result": `unknown method ${request.method}`};
+				return {"success": false, "result": `unknown method ${request.method}`};
 		}
-		return response
 	}
 
 	async createRedisClient(redisUrl: string) {
