@@ -44,6 +44,10 @@ interface MoveFileParams {
 	to: string
 }
 
+interface DeleteFileParams {
+	filepath: string;
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
@@ -304,6 +308,17 @@ export default class SpanreedPlugin extends Plugin {
 		return {"success": true, "result": null}
 	}
 
+	async handleCommandDeleteFile({filepath}: DeleteFileParams): Promise<SpanreedRpcResponse> {
+		const tfile: TFile | undefined = this.getFile(filepath)
+		if (tfile === undefined) {
+			return {"success": false, "result": "file not found"}
+		}
+		// Move to Obsidian's local `.trash` folder (recoverable) rather than
+		// a hard delete. Pass `true` for the system/OS trash instead.
+		await this.app.vault.trash(tfile, false)
+		return {"success": true, "result": null}
+	}
+
 	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
 		let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
 		try {
@@ -328,6 +343,8 @@ export default class SpanreedPlugin extends Plugin {
 				}
 				case 'move-file':
 					return await this.handleCommandMoveFile(request.params)
+				case 'delete-file':
+					return await this.handleCommandDeleteFile(request.params)
 				default:
 					return {"success": false, "result": `unknown method ${request.method}`};
 			}
