@@ -152,8 +152,9 @@ export default class SpanreedPlugin extends Plugin {
 	}
 
 	async handleCommandGenerateDailyNote(): Promise<SpanreedRpcResponse> {
-		console.log("generating daily note")
-		this.app.commands.executeCommandById("daily-notes");
+		console.log("generating daily note");
+		// `commands` isn't in the public API types, but exists at runtime.
+		(this.app as any).commands.executeCommandById("daily-notes");
 		return {"success": true, "result": null};
 	}
 
@@ -164,6 +165,9 @@ export default class SpanreedPlugin extends Plugin {
 			return {"success": false, "result": "file not found"};
 		}
 		const property = params.property;
+		// `processFrontMatter` ignores its callback's return value, so results
+		// must be captured out-of-band and returned after the switch.
+		let response: SpanreedRpcResponse = {"success": true, "result": null};
 		switch (params.operation) {
 			case "addToList":
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
@@ -171,39 +175,40 @@ export default class SpanreedPlugin extends Plugin {
 						frontmatter[property] = [];
 					}
 					if (!Array.isArray(frontmatter[property])) {
-						return {"success": false, "result": "property is not a list"};
+						response = {"success": false, "result": "property is not a list"};
+						return;
 					}
 					if (frontmatter[property].indexOf(params.value) <= -1) {
 						frontmatter[property].push(params.value);
 					}
-					return {"success": true, result: null};
 				});
 				break;
 			case "removeFromList":
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 					if (typeof (frontmatter[property]) === "undefined") {
+						response = {"success": false, "result": "property does not exist"};
 						return;
 					}
 					if (!Array.isArray(frontmatter[property])) {
-						return {"success": false, "result": "property is not a list"};
+						response = {"success": false, "result": "property is not a list"};
+						return;
 					}
 					let index = frontmatter[property].indexOf(params.value);
 					if (index > -1) {
 						frontmatter[property].splice(index, 1);
 					}
-					return {"success": true, result: null};
 				});
 				break;
 			case "setSingleValue":
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 					frontmatter[property] = params.value;
 				});
-				return {"success": true, result: null};
+				break;
 			case "deleteProperty":
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 					delete frontmatter[property];
 				});
-				return {"success": true, result: null};
+				break;
 			case "getProperty":
 				// TODO: there's a better API for this, but I CBA right now
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
@@ -211,16 +216,18 @@ export default class SpanreedPlugin extends Plugin {
 					if (typeof (value) === "undefined") {
 						value = null;
 					}
-					return {"success": true, result: value}
+					response = {"success": true, "result": value};
 				});
 				break;
 			default:
-				return {"success": false, "result": 'unknown modify-property operation'};
+				response = {"success": false, "result": 'unknown modify-property operation'};
 		}
+		return response;
 	}
 
 	async handleCommandQueryDataview({query}: QueryDataviewParams): Promise<SpanreedRpcResponse> {
-		const dv = this.app.plugins.plugins.dataview.api;
+		// `plugins` isn't in the public API types, but exists at runtime.
+		const dv = (this.app as any).plugins.plugins.dataview.api;
 		return dv.tryQuery(query)
 			.then((result: any) => {
 				return {"success": true, "result": result};
@@ -391,12 +398,25 @@ export default class SpanreedPlugin extends Plugin {
 	}
 
 	async pollRedisTaskMessageQueue() {
+		// Reschedule after this delay (ms). 0 keeps polling promptly on the
+		// happy path (blPop already blocks up to 60s); on failure or when
+		// unconfigured we back off so we never busy-loop and hang Obsidian.
+		let rescheduleDelay = 0;
+
+		const settings = this.getActiveConnectionSettings();
+		if (settings.spanreedUserId === -1 || settings.redisUrl === "") {
+			// Not configured yet (e.g. fresh install with no data.json).
+			// Don't attempt to connect; just check back periodically.
+			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 5000));
+			return;
+		}
+
 		try {
 			await this.ensureRedisClient()
 			await this.sendSpanreedWatchdogEvent()
 			console.log("polling redis task message queue")
 
-			const spanreedUserId = this.getActiveConnectionSettings().spanreedUserId;
+			const spanreedUserId = settings.spanreedUserId;
 			const taskQueue = `obsidian-plugin-tasks:${spanreedUserId}`;
 
 			console.log("Waiting on queue", taskQueue)
@@ -416,8 +436,11 @@ export default class SpanreedPlugin extends Plugin {
 			console.log("done polling redis task message queue")
 		} catch (e) {
 			console.log("error polling redis task message queue", e)
+			// Back off before retrying so a persistent failure (e.g. Redis
+			// unreachable) doesn't spin.
+			rescheduleDelay = 5000;
 		} finally {
-			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 0));
+			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), rescheduleDelay));
 		}
 	}
 }
