@@ -28,6 +28,13 @@ interface ReadFileParams {
 	format: "text" | "binary";
 }
 
+interface WriteFileParams {
+	filepath: string;
+	format: "text" | "binary";
+	content: string;
+	overwrite: boolean;
+}
+
 interface ListDirParams {
 	dirpath: string;
 }
@@ -237,6 +244,47 @@ export default class SpanreedPlugin extends Plugin {
 		return {"success": true, "result": {content, encoding}}
 	}
 
+	async ensureParentFolderExists(filepath: string): Promise<void> {
+		const lastSlash = filepath.lastIndexOf('/');
+		if (lastSlash <= 0) {
+			// File lives at the vault root; no folder to create.
+			return;
+		}
+		// Create each missing folder along the path, parents first.
+		const parts = filepath.substring(0, lastSlash).split('/');
+		let current = '';
+		for (const part of parts) {
+			current = current === '' ? part : `${current}/${part}`;
+			if (this.app.vault.getAbstractFileByPath(current) === null) {
+				await this.app.vault.createFolder(current);
+			}
+		}
+	}
+
+	async handleCommandWriteFile({filepath, format, content, overwrite}: WriteFileParams): Promise<SpanreedRpcResponse> {
+		const existing: TFile | undefined = this.getFile(filepath)
+		if (existing !== undefined && !overwrite) {
+			return {"success": false, "result": "Destination file already exists"};
+		}
+		await this.ensureParentFolderExists(filepath);
+		if (format === 'binary') {
+			// `content` is base64; hand Obsidian a plain ArrayBuffer.
+			const data: ArrayBuffer = Uint8Array.from(Buffer.from(content, 'base64')).buffer;
+			if (existing !== undefined) {
+				await this.app.vault.modifyBinary(existing, data);
+			} else {
+				await this.app.vault.createBinary(filepath, data);
+			}
+		} else {
+			if (existing !== undefined) {
+				await this.app.vault.modify(existing, content);
+			} else {
+				await this.app.vault.create(filepath, content);
+			}
+		}
+		return {"success": true, "result": null}
+	}
+
 	async handleCommandListDir({dirpath}: ListDirParams): Promise<SpanreedRpcResponse> {
 		const filepaths: string[] = []
 		for (let file of this.app.vault.getFiles()) {
@@ -271,6 +319,9 @@ export default class SpanreedPlugin extends Plugin {
 				}
 				case 'read-file': {
 					return await this.handleCommandReadFile(request.params);
+				}
+				case 'write-file': {
+					return await this.handleCommandWriteFile(request.params);
 				}
 				case 'list-dir': {
 					return await this.handleCommandListDir(request.params);
