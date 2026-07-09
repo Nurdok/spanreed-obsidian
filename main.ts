@@ -48,6 +48,16 @@ interface DeleteFileParams {
 	filepath: string;
 }
 
+interface AppendToNoteParams {
+	filepath: string;
+	content: string;
+	// When set, the content is inserted at the end of the section under the
+	// heading with this text (of any level). The heading is created at the end
+	// of the note if it doesn't exist yet. When absent/empty, the content is
+	// appended to the end of the note.
+	heading?: string | null;
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
@@ -326,6 +336,82 @@ export default class SpanreedPlugin extends Plugin {
 		return {"success": true, "result": null}
 	}
 
+	// Insert `content` at the end of the section under the heading whose text
+	// matches `heading` (any level, case-insensitive). If no such heading
+	// exists, the heading is created (as an H2) at the end of the note with the
+	// content beneath it. Returns the full new note body.
+	insertUnderHeading(existing: string, heading: string, content: string): string {
+		const headingRegex = /^(#{1,6})\s+(.*?)\s*$/;
+		const target = heading.replace(/^#+\s*/, "").trim().toLowerCase();
+		const body = content.replace(/^\n+/, "").replace(/\n+$/, "");
+		const lines = existing.split("\n");
+
+		let headingIndex = -1;
+		let headingLevel = 0;
+		for (let i = 0; i < lines.length; i++) {
+			const m = lines[i].match(headingRegex);
+			if (m && m[2].trim().toLowerCase() === target) {
+				headingIndex = i;
+				headingLevel = m[1].length;
+				break;
+			}
+		}
+
+		if (headingIndex === -1) {
+			// Heading not found: append it (and the content) to the end.
+			let prefix = existing.replace(/\n+$/, "");
+			const title = heading.replace(/^#+\s*/, "").trim();
+			const parts = prefix.length > 0 ? [prefix, ""] : [];
+			return [...parts, `## ${title}`, "", body, ""].join("\n");
+		}
+
+		// The section runs until the next heading of the same or higher level.
+		let sectionEnd = lines.length;
+		for (let i = headingIndex + 1; i < lines.length; i++) {
+			const m = lines[i].match(headingRegex);
+			if (m && m[1].length <= headingLevel) {
+				sectionEnd = i;
+				break;
+			}
+		}
+
+		// Insert after the section's existing content, trimming trailing blank
+		// lines so the spacing stays tidy.
+		let insertAt = sectionEnd;
+		while (insertAt > headingIndex + 1 && lines[insertAt - 1].trim() === "") {
+			insertAt--;
+		}
+
+		const before = lines.slice(0, insertAt);
+		// Drop the blank lines that separated the section from what follows; we
+		// re-add exactly one so spacing stays consistent.
+		const after = lines.slice(insertAt);
+		while (after.length > 0 && after[0].trim() === "") {
+			after.shift();
+		}
+		return [...before, "", body, ...(after.length > 0 ? ["", ...after] : [""])].join("\n");
+	}
+
+	async handleCommandAppendToNote({filepath, content, heading}: AppendToNoteParams): Promise<SpanreedRpcResponse> {
+		const tfile: TFile | undefined = this.getFile(filepath);
+		const existing: string = tfile === undefined ? "" : await this.app.vault.read(tfile);
+
+		let newBody: string;
+		if (heading !== undefined && heading !== null && heading.trim() !== "") {
+			newBody = this.insertUnderHeading(existing, heading, content);
+		} else {
+			newBody = existing + content;
+		}
+
+		if (tfile === undefined) {
+			await this.ensureParentFolderExists(filepath);
+			await this.app.vault.create(filepath, newBody);
+		} else {
+			await this.app.vault.modify(tfile, newBody);
+		}
+		return {"success": true, "result": null};
+	}
+
 	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
 		let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
 		try {
@@ -352,6 +438,8 @@ export default class SpanreedPlugin extends Plugin {
 					return await this.handleCommandMoveFile(request.params)
 				case 'delete-file':
 					return await this.handleCommandDeleteFile(request.params)
+				case 'append-to-note':
+					return await this.handleCommandAppendToNote(request.params)
 				default:
 					return {"success": false, "result": `unknown method ${request.method}`};
 			}
