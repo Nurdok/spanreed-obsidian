@@ -121,6 +121,16 @@ export default class SpanreedPlugin extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SpanreedSettingsTab(this.app, this));
 
+		// Lets you confirm which build is installed (version + the RPC methods
+		// it actually supports) straight from the command palette.
+		this.addCommand({
+			id: 'show-supported-api-commands',
+			name: 'Show supported API commands',
+			callback: () => {
+				new SpanreedApiCommandsModal(this.app, this).open();
+			},
+		});
+
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 0));
 
@@ -412,37 +422,35 @@ export default class SpanreedPlugin extends Plugin {
 		return {"success": true, "result": null};
 	}
 
+	// Single source of truth for the supported RPC methods. The Redis dispatch
+	// and the "Show supported API commands" palette command both read from
+	// here, so the advertised command list can never drift from what's really
+	// wired up.
+	getMethodHandlers(): Record<string, (params: any) => Promise<SpanreedRpcResponse>> {
+		return {
+			"generate-daily-note": () => this.handleCommandGenerateDailyNote(),
+			"modify-property": (params) => this.handleCommandModifyProperty(params),
+			"query-dataview": (params) => this.handleCommandQueryDataview(params),
+			"read-file": (params) => this.handleCommandReadFile(params),
+			"write-file": (params) => this.handleCommandWriteFile(params),
+			"list-dir": (params) => this.handleCommandListDir(params),
+			"move-file": (params) => this.handleCommandMoveFile(params),
+			"delete-file": (params) => this.handleCommandDeleteFile(params),
+			"append-to-note": (params) => this.handleCommandAppendToNote(params),
+		};
+	}
+
+	getSupportedMethods(): string[] {
+		return Object.keys(this.getMethodHandlers());
+	}
+
 	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
-		let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
+		const handler = this.getMethodHandlers()[request.method];
+		if (handler === undefined) {
+			return {"success": false, "result": `unknown method ${request.method}`};
+		}
 		try {
-			switch (request.method) {
-				case "generate-daily-note": {
-					return await this.handleCommandGenerateDailyNote()
-				}
-				case "modify-property": {
-					return await this.handleCommandModifyProperty(request.params);
-				}
-				case "query-dataview": {
-					return await this.handleCommandQueryDataview(request.params);
-				}
-				case 'read-file': {
-					return await this.handleCommandReadFile(request.params);
-				}
-				case 'write-file': {
-					return await this.handleCommandWriteFile(request.params);
-				}
-				case 'list-dir': {
-					return await this.handleCommandListDir(request.params);
-				}
-				case 'move-file':
-					return await this.handleCommandMoveFile(request.params)
-				case 'delete-file':
-					return await this.handleCommandDeleteFile(request.params)
-				case 'append-to-note':
-					return await this.handleCommandAppendToNote(request.params)
-				default:
-					return {"success": false, "result": `unknown method ${request.method}`};
-			}
+			return await handler(request.params);
 		} catch (e) {
 			return {"success": false, "result": `Request ${request.method} failed: ${e}`};
 		}
@@ -530,6 +538,38 @@ export default class SpanreedPlugin extends Plugin {
 		} finally {
 			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), rescheduleDelay));
 		}
+	}
+}
+
+class SpanreedApiCommandsModal extends Modal {
+	plugin: SpanreedPlugin;
+
+	constructor(app: App, plugin: SpanreedPlugin) {
+		super(app);
+		this.plugin = plugin;
+	}
+
+	onOpen(): void {
+		const {contentEl} = this;
+		contentEl.empty();
+
+		contentEl.createEl('h2', {text: 'Spanreed API'});
+		contentEl.createEl('p', {
+			text: `Plugin version: ${this.plugin.manifest.version}`,
+		});
+
+		const methods = this.plugin.getSupportedMethods();
+		contentEl.createEl('p', {
+			text: `Supported API commands (${methods.length}):`,
+		});
+		const list = contentEl.createEl('ul');
+		for (const method of methods) {
+			list.createEl('li', {text: method});
+		}
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
 	}
 }
 
