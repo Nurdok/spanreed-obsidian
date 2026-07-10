@@ -330,9 +330,9 @@ export default class SpanreedPlugin extends Plugin {
 		if (tfile === undefined) {
 			return {"success": false, "result": "file not found"}
 		}
-		// Move to Obsidian's local `.trash` folder (recoverable) rather than
-		// a hard delete. Pass `true` for the system/OS trash instead.
-		await this.app.vault.trash(tfile, false)
+		// Permanently delete the file (not recoverable). Use `vault.trash` if a
+		// recoverable delete is ever wanted instead.
+		await this.app.vault.delete(tfile)
 		return {"success": true, "result": null}
 	}
 
