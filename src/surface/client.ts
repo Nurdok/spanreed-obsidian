@@ -206,6 +206,15 @@ export class SurfaceClient {
 		this.notifyChange();
 	}
 
+	// User-requested clear of the conversation section. Keeps an active
+	// unanswered prompt (it is actionable and would otherwise be silently
+	// discarded); clears the transcript and any status line.
+	clearConversation() {
+		this.transcript = [];
+		this.statusLine = null;
+		this.notifyChange();
+	}
+
 	// -- registration & presence -------------------------------------------
 
 	private async writeRegistration(enabled: boolean) {
