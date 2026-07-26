@@ -206,12 +206,25 @@ export class SurfaceClient {
 		this.notifyChange();
 	}
 
-	// User-requested clear of the conversation section. Keeps an active
-	// unanswered prompt (it is actionable and would otherwise be silently
-	// discarded); clears the transcript and any status line.
-	clearConversation() {
+	// User-requested clear of the conversation section: wipes the
+	// transcript/status line AND aborts an active unanswered prompt's
+	// interaction server-side (cancel-flow), so the flow doesn't keep
+	// re-prompting into a card the user just dismissed.
+	async clearConversation() {
+		const current = this.currentPrompt;
 		this.transcript = [];
 		this.statusLine = null;
+		if (current !== null && !current.answered) {
+			this.markDismissed(current.payload.interaction_id);
+			this.currentPrompt = null;
+			try {
+				await this.sendEvent("cancel-flow", {
+					interaction_id: current.payload.interaction_id,
+				});
+			} catch (e) {
+				console.error("Spanreed: failed to send cancel-flow", e);
+			}
+		}
 		this.notifyChange();
 	}
 
