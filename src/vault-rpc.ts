@@ -131,6 +131,10 @@ export class VaultRpcAgent {
 						response = {"success": false, "result": "property does not exist"};
 						return;
 					}
+					if (frontmatter[property] === null) {
+						// Empty `property:` line = YAML null: nothing to remove.
+						return;
+					}
 					if (!Array.isArray(frontmatter[property])) {
 						response = {"success": false, "result": "property is not a list"};
 						return;
