@@ -109,7 +109,11 @@ export class VaultRpcAgent {
 		switch (params.operation) {
 			case "addToList":
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
-					if (typeof (frontmatter[property]) === "undefined") {
+					// An empty `property:` line parses as YAML null; treat it
+					// like a missing property. Real scalar values still error
+					// below rather than being silently clobbered.
+					if (typeof (frontmatter[property]) === "undefined"
+						|| frontmatter[property] === null) {
 						frontmatter[property] = [];
 					}
 					if (!Array.isArray(frontmatter[property])) {
@@ -125,6 +129,10 @@ export class VaultRpcAgent {
 				await this.app.fileManager.processFrontMatter(tfile, (frontmatter) => {
 					if (typeof (frontmatter[property]) === "undefined") {
 						response = {"success": false, "result": "property does not exist"};
+						return;
+					}
+					if (frontmatter[property] === null) {
+						// Empty `property:` line = YAML null: nothing to remove.
 						return;
 					}
 					if (!Array.isArray(frontmatter[property])) {
