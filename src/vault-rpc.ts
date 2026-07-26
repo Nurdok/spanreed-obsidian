@@ -1,7 +1,6 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile} from 'obsidian';
-import {createClient, RedisClientType} from "redis";
+import {App, Modal, TFile} from 'obsidian';
 import {Buffer} from "node:buffer"
-
+import type SpanreedPlugin from "./main";
 
 type SpanreedMonitorEvent =
 	{ user: number } & ({ kind: 'watchdog' } | { kind: 'error', message: string });
@@ -48,6 +47,16 @@ interface DeleteFileParams {
 	filepath: string;
 }
 
+interface AppendToNoteParams {
+	filepath: string;
+	content: string;
+	// When set, the content is inserted at the end of the section under the
+	// heading with this text (of any level). The heading is created at the end
+	// of the note if it doesn't exist yet. When absent/empty, the content is
+	// appended to the end of the note.
+	heading?: string | null;
+}
+
 interface SpanreedRpcResponse {
 	success: boolean;
 	result: any;
@@ -56,86 +65,19 @@ interface SpanreedRpcResponse {
 interface QueryDataviewResult {
 }
 
-interface ConnectionSettings {
-	spanreedUserId: number;
-	redisUrl: string;
-}
+// The vault-RPC agent: serves spanreed's vault RPCs over the legacy
+// obsidian-plugin-tasks:* queues and feeds the obsidian-plugin-monitor:*
+// watchdog. Moved verbatim from the pre-restructure main.ts; only the
+// `this.`-references were adapted (plugin/app/redis manager).
+export class VaultRpcAgent {
+	plugin: SpanreedPlugin;
 
-type Environment = 'production' | 'staging';
-
-const toString = (env: Environment) => {
-	return {
-		'production': 'Production',
-		'staging': 'Staging',
-	}[env];
-}
-
-interface SpanreedSettings {
-	connectionSettings: Record<Environment, ConnectionSettings>
-	activeEnvironment: Environment
-}
-
-const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
-	spanreedUserId: -1,
-	redisUrl: "",
-}
-
-const DEFAULT_SETTINGS: SpanreedSettings = {
-	connectionSettings: {
-		production: DEFAULT_CONNECTION_SETTINGS,
-		staging: DEFAULT_CONNECTION_SETTINGS,
-	},
-	activeEnvironment: 'production',
-}
-
-export default class SpanreedPlugin extends Plugin {
-	settings: SpanreedSettings;
-	redisClient: RedisClientType<any, any, any>;
-	lastUsedRedisUrl?: string
-
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SpanreedSettingsTab(this.app, this));
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 0));
-
-		const connectionSettings = this.getActiveConnectionSettings()
-
-		if (connectionSettings.spanreedUserId === -1) {
-			new Notice("Please set your Spanreed user ID in the plugin settings.");
-			return;
-		}
-		if (connectionSettings.redisUrl === "") {
-			new Notice("Please set your Redis URL in the plugin settings.");
-			return;
-		}
+	constructor(plugin: SpanreedPlugin) {
+		this.plugin = plugin;
 	}
 
-	onunload() {
-
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
+	get app(): App {
+		return this.plugin.app;
 	}
 
 	getFile(filepath: string): TFile | undefined {
@@ -145,10 +87,6 @@ export default class SpanreedPlugin extends Plugin {
 			}
 		}
 		return undefined
-	}
-
-	getActiveConnectionSettings(): ConnectionSettings {
-		return this.settings.connectionSettings[this.settings.activeEnvironment];
 	}
 
 	async handleCommandGenerateDailyNote(): Promise<SpanreedRpcResponse> {
@@ -320,62 +258,127 @@ export default class SpanreedPlugin extends Plugin {
 		if (tfile === undefined) {
 			return {"success": false, "result": "file not found"}
 		}
-		// Move to Obsidian's local `.trash` folder (recoverable) rather than
-		// a hard delete. Pass `true` for the system/OS trash instead.
-		await this.app.vault.trash(tfile, false)
+		// Permanently delete the file (not recoverable). Use `vault.trash` if a
+		// recoverable delete is ever wanted instead.
+		await this.app.vault.delete(tfile)
 		return {"success": true, "result": null}
 	}
 
-	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
-		let response: SpanreedRpcResponse = {"success": false, "result": "unknown error"};
-		try {
-			switch (request.method) {
-				case "generate-daily-note": {
-					return await this.handleCommandGenerateDailyNote()
-				}
-				case "modify-property": {
-					return await this.handleCommandModifyProperty(request.params);
-				}
-				case "query-dataview": {
-					return await this.handleCommandQueryDataview(request.params);
-				}
-				case 'read-file': {
-					return await this.handleCommandReadFile(request.params);
-				}
-				case 'write-file': {
-					return await this.handleCommandWriteFile(request.params);
-				}
-				case 'list-dir': {
-					return await this.handleCommandListDir(request.params);
-				}
-				case 'move-file':
-					return await this.handleCommandMoveFile(request.params)
-				case 'delete-file':
-					return await this.handleCommandDeleteFile(request.params)
-				default:
-					return {"success": false, "result": `unknown method ${request.method}`};
+	// Insert `content` at the end of the section under the heading whose text
+	// matches `heading` (any level, case-insensitive). If no such heading
+	// exists, the heading is created (as an H2) at the end of the note with the
+	// content beneath it. Returns the full new note body.
+	insertUnderHeading(existing: string, heading: string, content: string): string {
+		const headingRegex = /^(#{1,6})\s+(.*?)\s*$/;
+		const target = heading.replace(/^#+\s*/, "").trim().toLowerCase();
+		const body = content.replace(/^\n+/, "").replace(/\n+$/, "");
+		const lines = existing.split("\n");
+
+		let headingIndex = -1;
+		let headingLevel = 0;
+		for (let i = 0; i < lines.length; i++) {
+			const m = lines[i].match(headingRegex);
+			if (m && m[2].trim().toLowerCase() === target) {
+				headingIndex = i;
+				headingLevel = m[1].length;
+				break;
 			}
+		}
+
+		if (headingIndex === -1) {
+			// Heading not found: append it (and the content) to the end.
+			let prefix = existing.replace(/\n+$/, "");
+			const title = heading.replace(/^#+\s*/, "").trim();
+			const parts = prefix.length > 0 ? [prefix, ""] : [];
+			return [...parts, `## ${title}`, "", body, ""].join("\n");
+		}
+
+		// The section runs until the next heading of the same or higher level.
+		let sectionEnd = lines.length;
+		for (let i = headingIndex + 1; i < lines.length; i++) {
+			const m = lines[i].match(headingRegex);
+			if (m && m[1].length <= headingLevel) {
+				sectionEnd = i;
+				break;
+			}
+		}
+
+		// Insert after the section's existing content, trimming trailing blank
+		// lines so the spacing stays tidy.
+		let insertAt = sectionEnd;
+		while (insertAt > headingIndex + 1 && lines[insertAt - 1].trim() === "") {
+			insertAt--;
+		}
+
+		const before = lines.slice(0, insertAt);
+		// Drop the blank lines that separated the section from what follows; we
+		// re-add exactly one so spacing stays consistent.
+		const after = lines.slice(insertAt);
+		while (after.length > 0 && after[0].trim() === "") {
+			after.shift();
+		}
+		return [...before, "", body, ...(after.length > 0 ? ["", ...after] : [""])].join("\n");
+	}
+
+	async handleCommandAppendToNote({filepath, content, heading}: AppendToNoteParams): Promise<SpanreedRpcResponse> {
+		const tfile: TFile | undefined = this.getFile(filepath);
+		const existing: string = tfile === undefined ? "" : await this.app.vault.read(tfile);
+
+		let newBody: string;
+		if (heading !== undefined && heading !== null && heading.trim() !== "") {
+			newBody = this.insertUnderHeading(existing, heading, content);
+		} else {
+			newBody = existing + content;
+		}
+
+		if (tfile === undefined) {
+			await this.ensureParentFolderExists(filepath);
+			await this.app.vault.create(filepath, newBody);
+		} else {
+			await this.app.vault.modify(tfile, newBody);
+		}
+		return {"success": true, "result": null};
+	}
+
+	// Single source of truth for the supported RPC methods. The Redis dispatch
+	// and the "Show supported API commands" palette command both read from
+	// here, so the advertised command list can never drift from what's really
+	// wired up.
+	getMethodHandlers(): Record<string, (params: any) => Promise<SpanreedRpcResponse>> {
+		return {
+			"generate-daily-note": () => this.handleCommandGenerateDailyNote(),
+			"modify-property": (params) => this.handleCommandModifyProperty(params),
+			"query-dataview": (params) => this.handleCommandQueryDataview(params),
+			"read-file": (params) => this.handleCommandReadFile(params),
+			"write-file": (params) => this.handleCommandWriteFile(params),
+			"list-dir": (params) => this.handleCommandListDir(params),
+			"move-file": (params) => this.handleCommandMoveFile(params),
+			"delete-file": (params) => this.handleCommandDeleteFile(params),
+			"append-to-note": (params) => this.handleCommandAppendToNote(params),
+		};
+	}
+
+	getSupportedMethods(): string[] {
+		return Object.keys(this.getMethodHandlers());
+	}
+
+	async handleSpanreedRequest(request: SpanreedRpcRequest): Promise<SpanreedRpcResponse> {
+		const handler = this.getMethodHandlers()[request.method];
+		if (handler === undefined) {
+			return {"success": false, "result": `unknown method ${request.method}`};
+		}
+		try {
+			return await handler(request.params);
 		} catch (e) {
 			return {"success": false, "result": `Request ${request.method} failed: ${e}`};
 		}
 	}
 
-	async createRedisClient(redisUrl: string) {
-		this.redisClient = createClient({
-			url: redisUrl
-		});
-		this.redisClient.on('error', (err) => {
-			this.sendRedisErrorToSpanreedMonitor(err.message);
-		});
-		await this.redisClient.connect();
-		this.lastUsedRedisUrl = redisUrl
-	}
-
 	async sendRedisErrorToSpanreedMonitor(message: string) {
-		const spanreedUserId = this.getActiveConnectionSettings().spanreedUserId;
+		const spanreedUserId = this.plugin.getActiveConnectionSettings().spanreedUserId;
 		const monitorQueue = `obsidian-plugin-monitor:${spanreedUserId}`
-		await this.ensureRedisClient();
-		await this.redisClient.lPush(monitorQueue, JSON.stringify({
+		const redisClient = await this.plugin.redis.ensureRpcClient();
+		await redisClient.lPush(monitorQueue, JSON.stringify({
 			user: spanreedUserId,
 			kind: 'error',
 			message: message
@@ -383,18 +386,10 @@ export default class SpanreedPlugin extends Plugin {
 	}
 
 	async sendSpanreedWatchdogEvent() {
-		const spanreedUserId = this.getActiveConnectionSettings().spanreedUserId;
+		const spanreedUserId = this.plugin.getActiveConnectionSettings().spanreedUserId;
 		const monitorQueue = `obsidian-plugin-monitor:${spanreedUserId}`
-		await this.ensureRedisClient();
-		await this.redisClient.lPush(monitorQueue, JSON.stringify({user: spanreedUserId, kind: 'watchdog'}));
-	}
-
-	async ensureRedisClient() {
-		const activeConnectionSettings = this.getActiveConnectionSettings()
-		if (this.redisClient === undefined || this.lastUsedRedisUrl === undefined ||
-			(activeConnectionSettings.redisUrl !== this.lastUsedRedisUrl)) {
-			await this.createRedisClient(activeConnectionSettings.redisUrl);
-		}
+		const redisClient = await this.plugin.redis.ensureRpcClient();
+		await redisClient.lPush(monitorQueue, JSON.stringify({user: spanreedUserId, kind: 'watchdog'}));
 	}
 
 	async pollRedisTaskMessageQueue() {
@@ -403,16 +398,16 @@ export default class SpanreedPlugin extends Plugin {
 		// unconfigured we back off so we never busy-loop and hang Obsidian.
 		let rescheduleDelay = 0;
 
-		const settings = this.getActiveConnectionSettings();
+		const settings = this.plugin.getActiveConnectionSettings();
 		if (settings.spanreedUserId === -1 || settings.redisUrl === "") {
 			// Not configured yet (e.g. fresh install with no data.json).
 			// Don't attempt to connect; just check back periodically.
-			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 5000));
+			this.plugin.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), 5000));
 			return;
 		}
 
 		try {
-			await this.ensureRedisClient()
+			const redisClient = await this.plugin.redis.ensureRpcClient()
 			await this.sendSpanreedWatchdogEvent()
 			console.log("polling redis task message queue")
 
@@ -421,7 +416,7 @@ export default class SpanreedPlugin extends Plugin {
 
 			console.log("Waiting on queue", taskQueue)
 
-			await this.redisClient.blPop(taskQueue, 60 /* timeout, in seconds */)
+			await redisClient.blPop(taskQueue, 60 /* timeout, in seconds */)
 				.then(async (res) => {
 					if (res === null) {
 						return;
@@ -431,7 +426,7 @@ export default class SpanreedPlugin extends Plugin {
 					let response: SpanreedRpcResponse = await this.handleSpanreedRequest(request);
 					console.log("sending response", response)
 					let responseQueue = `obsidian-plugin-tasks:${spanreedUserId}:${request.request_id}`;
-					await this.redisClient.lPush(responseQueue, JSON.stringify(response));
+					await redisClient.lPush(responseQueue, JSON.stringify(response));
 				});
 			console.log("done polling redis task message queue")
 		} catch (e) {
@@ -440,68 +435,39 @@ export default class SpanreedPlugin extends Plugin {
 			// unreachable) doesn't spin.
 			rescheduleDelay = 5000;
 		} finally {
-			this.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), rescheduleDelay));
+			this.plugin.registerInterval(window.setTimeout(() => this.pollRedisTaskMessageQueue(), rescheduleDelay));
 		}
 	}
 }
 
-class SpanreedSettingsTab extends PluginSettingTab {
+export class SpanreedApiCommandsModal extends Modal {
 	plugin: SpanreedPlugin;
 
 	constructor(app: App, plugin: SpanreedPlugin) {
-		super(app, plugin);
+		super(app);
 		this.plugin = plugin;
 	}
 
-	display(): void {
-		const {containerEl} = this;
+	onOpen(): void {
+		const {contentEl} = this;
+		contentEl.empty();
 
-		containerEl.empty();
+		contentEl.createEl('h2', {text: 'Spanreed API'});
+		contentEl.createEl('p', {
+			text: `Plugin version: ${this.plugin.manifest.version}`,
+		});
 
-		containerEl.createEl('h2', {text: 'Environment'});
-
-		new Setting(containerEl)
-			.setName('Active Environment')
-			.setDesc('The environment to use for Spanreed')
-			.addDropdown(dropdown => dropdown
-				.addOptions({
-					'production': 'Production',
-					'staging': 'Staging',
-				})
-				.setValue(this.plugin.settings.activeEnvironment)
-				.onChange(async (value) => {
-					this.plugin.settings.activeEnvironment = value as Environment;
-					await this.plugin.saveSettings();
-				}));
-
-		containerEl.createEl('h3', {text: 'Connection Settings'});
-
-		for (let env in this.plugin.settings.connectionSettings) {
-			containerEl.createEl('h4', {text: toString(env as Environment)});
-			let connectionSettings = this.plugin.settings.connectionSettings[env as Environment]
-
-			new Setting(containerEl)
-				.setName(`Spanreed User ID`)
-				.setDesc('Your Spanreed user ID')
-				.addText(text => text
-					.setPlaceholder('Enter your Spanreed user ID')
-					.setValue(connectionSettings.spanreedUserId.toString())
-					.onChange(async (value) => {
-						connectionSettings.spanreedUserId = parseInt(value);
-						await this.plugin.saveSettings();
-					}));
-
-			new Setting(containerEl)
-				.setName('Redis URL')
-				.setDesc('Your Redis URL')
-				.addText(text => text
-					.setPlaceholder('Enter your Redis URL')
-					.setValue(connectionSettings.redisUrl)
-					.onChange(async (value) => {
-						connectionSettings.redisUrl = value;
-						await this.plugin.saveSettings();
-					}));
+		const methods = this.plugin.vaultRpc.getSupportedMethods();
+		contentEl.createEl('p', {
+			text: `Supported API commands (${methods.length}):`,
+		});
+		const list = contentEl.createEl('ul');
+		for (const method of methods) {
+			list.createEl('li', {text: method});
 		}
+	}
 
+	onClose(): void {
+		this.contentEl.empty();
 	}
 }
