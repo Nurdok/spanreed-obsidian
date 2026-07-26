@@ -27,6 +27,16 @@
 	font-size: var(--font-ui-small);
 }
 
+/* Obsidian disables text selection outside editors; message and inbox
+   content should be copyable. */
+.spanreed-message,
+.spanreed-prompt-text,
+.spanreed-inbox-item {
+	user-select: text;
+	-webkit-user-select: text;
+	cursor: text;
+}
+
 /* -- conversation ------------------------------------------------------- */
 
 .spanreed-transcript {
