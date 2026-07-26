@@ -1,8 +1,152 @@
-/*
+/* Spanreed interaction-surface sidebar styling. Obsidian CSS variables
+   only — no hardcoded colors. */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.spanreed-surface-view {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+}
 
-If your plugin does not need CSS, delete this file.
+.spanreed-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
 
-*/
+.spanreed-section-title {
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.spanreed-disabled-note,
+.spanreed-empty-note {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+}
+
+/* -- conversation ------------------------------------------------------- */
+
+.spanreed-transcript {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.spanreed-message {
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-2) var(--size-4-3);
+}
+
+.spanreed-message-local {
+	background-color: var(--background-modifier-hover);
+	margin-left: var(--size-4-6);
+	text-align: right;
+}
+
+.spanreed-message p:first-child,
+.spanreed-prompt-text p:first-child,
+.spanreed-inbox-body p:first-child {
+	margin-top: 0;
+}
+
+.spanreed-message p:last-child,
+.spanreed-prompt-text p:last-child,
+.spanreed-inbox-body p:last-child {
+	margin-bottom: 0;
+}
+
+.spanreed-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+}
+
+.spanreed-prompt-card {
+	background-color: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--interactive-accent);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-3);
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.spanreed-prompt-card.is-answered {
+	opacity: 0.6;
+}
+
+.spanreed-choice-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+.spanreed-choice-button {
+	width: 100%;
+	text-align: left;
+}
+
+.spanreed-input-row {
+	display: flex;
+	gap: var(--size-4-1);
+}
+
+.spanreed-input {
+	flex-grow: 1;
+}
+
+/* -- inbox -------------------------------------------------------------- */
+
+.spanreed-inbox-summary {
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.spanreed-badge {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-radius: var(--radius-l);
+	font-size: var(--font-ui-smaller);
+	padding: 0 var(--size-4-2);
+	line-height: var(--line-height-tight);
+}
+
+.spanreed-inbox-controls {
+	display: flex;
+	gap: var(--size-4-1);
+	margin-top: var(--size-4-2);
+}
+
+.spanreed-inbox-button {
+	font-size: var(--font-ui-smaller);
+}
+
+.spanreed-inbox-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+.spanreed-inbox-item {
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-2) var(--size-4-3);
+}
+
+.spanreed-inbox-item.is-unread {
+	border-left: 3px solid var(--interactive-accent);
+}
+
+.spanreed-inbox-ts {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	margin-bottom: var(--size-4-1);
+}
