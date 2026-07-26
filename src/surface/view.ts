@@ -92,6 +92,17 @@ export class SpanreedView extends ItemView {
 		if (surface.currentPrompt !== null) {
 			this.renderPromptCard(section, surface, surface.currentPrompt);
 		}
+
+		if (surface.transcript.length > 0 || surface.statusLine !== null) {
+			const controls = section.createDiv({cls: "spanreed-inbox-controls"});
+			const clearButton = controls.createEl("button", {
+				cls: "spanreed-inbox-button",
+				text: "Clear",
+			});
+			clearButton.addEventListener("click", () => {
+				surface.clearConversation();
+			});
+		}
 	}
 
 	private renderPromptCard(section: HTMLElement, surface: SurfaceClient, prompt: PromptState) {
