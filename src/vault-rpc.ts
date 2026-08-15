@@ -1,4 +1,5 @@
-import {App, Modal, TFile} from 'obsidian';
+import {App, Modal, TFile, moment} from 'obsidian';
+import {createDailyNote, getAllDailyNotes, getDailyNote} from 'obsidian-daily-notes-interface';
 import {Buffer} from "node:buffer"
 import type SpanreedPlugin from "./main";
 
@@ -91,8 +92,12 @@ export class VaultRpcAgent {
 
 	async handleCommandGenerateDailyNote(): Promise<SpanreedRpcResponse> {
 		console.log("generating daily note");
-		// `commands` isn't in the public API types, but exists at runtime.
-		(this.app as any).commands.executeCommandById("daily-notes");
+		// Create today's daily note without opening it in the UI. Running the
+		// built-in "daily-notes" command would also open the note in a leaf.
+		const today = moment();
+		if (!getDailyNote(today, getAllDailyNotes())) {
+			await createDailyNote(today);
+		}
 		return {"success": true, "result": null};
 	}
 

@@ -22,6 +22,7 @@
     "typescript": "4.7.4"
   },
   "dependencies": {
+    "obsidian-daily-notes-interface": "^0.9.5",
     "redis": "^4.6.12"
   },
   "repository": {
