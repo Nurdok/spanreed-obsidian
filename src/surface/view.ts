@@ -1,10 +1,64 @@
-import {ItemView, WorkspaceLeaf} from 'obsidian';
+import {Component, ItemView, WorkspaceLeaf} from 'obsidian';
 import type SpanreedPlugin from "../main";
 import type {SurfaceClient, PromptState} from "./client";
 import {entryContent} from "./inbox";
 import {renderContentInto} from "./render";
 
 export const VIEW_TYPE_SPANREED = "spanreed-surface";
+
+// Draining a backlog fires one state change per envelope (the inbound queue
+// holds up to 100), and each one would otherwise repaint the whole surface.
+// Collapse a burst into a single paint.
+export const RENDER_DEBOUNCE_MS = 50;
+
+// How many inbox entries get built into the DOM at once. The server keeps up
+// to INBOX_MAX (200) and every one of them is a Markdown render, which is far
+// too much to rebuild on each repaint.
+export const INBOX_RENDER_LIMIT = 50;
+
+// Which slice of the inbox to render, and how much is left over.
+export function inboxPage<T>(
+	entries: T[], showAll: boolean, limit: number = INBOX_RENDER_LIMIT
+): {shown: T[]; hidden: number} {
+	if (showAll || entries.length <= limit) {
+		return {shown: entries, hidden: 0};
+	}
+	return {shown: entries.slice(0, limit), hidden: entries.length - limit};
+}
+
+// Coalesces repaint requests: the first one schedules a paint and any that
+// arrive before it fires are absorbed into it, so a burst costs one render.
+export class RenderScheduler {
+	private timeoutId: ReturnType<typeof setTimeout> | null = null;
+	private readonly delayMs: number;
+	private readonly run: () => void;
+
+	constructor(delayMs: number, run: () => void) {
+		this.delayMs = delayMs;
+		this.run = run;
+	}
+
+	get pending(): boolean {
+		return this.timeoutId !== null;
+	}
+
+	schedule() {
+		if (this.timeoutId !== null) {
+			return;
+		}
+		this.timeoutId = setTimeout(() => {
+			this.timeoutId = null;
+			this.run();
+		}, this.delayMs);
+	}
+
+	cancel() {
+		if (this.timeoutId !== null) {
+			clearTimeout(this.timeoutId);
+			this.timeoutId = null;
+		}
+	}
+}
 
 // The sidebar surface view: two stacked sections — Conversation (transcript
 // + active prompt card) and a collapsible Inbox. Renders purely from
@@ -15,10 +69,15 @@ export class SpanreedView extends ItemView {
 	private inputDraft = "";
 	private inputHadFocus = false;
 	private inboxOpen = true;
+	private inboxShowAll = false;
+	private scheduler: RenderScheduler;
+	// Owns the Markdown render children of the CURRENT paint only.
+	private renderComponent: Component | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: SpanreedPlugin) {
 		super(leaf);
 		this.plugin = plugin;
+		this.scheduler = new RenderScheduler(RENDER_DEBOUNCE_MS, () => this.render());
 	}
 
 	getViewType(): string {
@@ -34,18 +93,37 @@ export class SpanreedView extends ItemView {
 	}
 
 	async onOpen() {
-		this.unsubscribe = this.plugin.onSurfaceChange(() => this.render());
+		this.unsubscribe = this.plugin.onSurfaceChange(() => this.scheduler.schedule());
 		this.render();
 	}
 
 	async onClose() {
+		this.scheduler.cancel();
 		if (this.unsubscribe !== null) {
 			this.unsubscribe();
 			this.unsubscribe = null;
 		}
+		this.releaseRenderComponent();
+	}
+
+	// MarkdownRenderer.render attaches child components to the owner it is
+	// handed, and those live until the OWNER unloads. container.empty() drops
+	// the DOM but not the components, so handing it a long-lived owner (the
+	// view) leaks one set per repaint. Each paint gets its own owner instead,
+	// unloaded here at the start of the next one.
+	private releaseRenderComponent() {
+		if (this.renderComponent !== null) {
+			this.removeChild(this.renderComponent);
+			this.renderComponent = null;
+		}
 	}
 
 	private render() {
+		this.releaseRenderComponent();
+		const renderComponent = new Component();
+		this.addChild(renderComponent);
+		this.renderComponent = renderComponent;
+
 		const container = this.contentEl;
 		container.empty();
 		container.addClass("spanreed-surface-view");
@@ -60,13 +138,15 @@ export class SpanreedView extends ItemView {
 			return;
 		}
 
-		this.renderConversation(container, surface);
-		this.renderInbox(container, surface);
+		this.renderConversation(container, surface, renderComponent);
+		this.renderInbox(container, surface, renderComponent);
 	}
 
 	// -- conversation ------------------------------------------------------
 
-	private renderConversation(container: HTMLElement, surface: SurfaceClient) {
+	private renderConversation(
+		container: HTMLElement, surface: SurfaceClient, component: Component
+	) {
 		const section = container.createDiv({cls: "spanreed-section"});
 		section.createDiv({cls: "spanreed-section-title", text: "Conversation"});
 
@@ -83,14 +163,14 @@ export class SpanreedView extends ItemView {
 				? "spanreed-message spanreed-message-local"
 				: "spanreed-message";
 			const el = transcriptEl.createDiv({cls: cls});
-			void renderContentInto(this.app, entry.content, el, this);
+			void renderContentInto(this.app, entry.content, el, component);
 		}
 
 		if (surface.statusLine !== null) {
 			section.createDiv({cls: "spanreed-status", text: surface.statusLine});
 		}
 		if (surface.currentPrompt !== null) {
-			this.renderPromptCard(section, surface, surface.currentPrompt);
+			this.renderPromptCard(section, surface, surface.currentPrompt, component);
 		}
 
 		if (surface.transcript.length > 0 || surface.statusLine !== null
@@ -106,12 +186,14 @@ export class SpanreedView extends ItemView {
 		}
 	}
 
-	private renderPromptCard(section: HTMLElement, surface: SurfaceClient, prompt: PromptState) {
+	private renderPromptCard(
+		section: HTMLElement, surface: SurfaceClient, prompt: PromptState, component: Component
+	) {
 		const card = section.createDiv({
 			cls: "spanreed-prompt-card" + (prompt.answered ? " is-answered" : ""),
 		});
 		const promptTextEl = card.createDiv({cls: "spanreed-prompt-text"});
-		void renderContentInto(this.app, prompt.payload.prompt, promptTextEl, this);
+		void renderContentInto(this.app, prompt.payload.prompt, promptTextEl, component);
 
 		if (prompt.payload.kind === "choice" && prompt.payload.choices !== null) {
 			// Vertical list; a nested row's buttons share the same top-level
@@ -187,7 +269,7 @@ export class SpanreedView extends ItemView {
 
 	// -- inbox -------------------------------------------------------------
 
-	private renderInbox(container: HTMLElement, surface: SurfaceClient) {
+	private renderInbox(container: HTMLElement, surface: SurfaceClient, component: Component) {
 		const details = container.createEl("details", {
 			cls: "spanreed-section spanreed-inbox",
 		});
@@ -218,6 +300,8 @@ export class SpanreedView extends ItemView {
 		});
 		clearButton.addEventListener("click", () => {
 			surface.inbox.clear();
+			// Back to the capped view; whatever arrives next starts small.
+			this.inboxShowAll = false;
 			this.plugin.notifySurfaceChanged();
 		});
 
@@ -227,7 +311,8 @@ export class SpanreedView extends ItemView {
 			list.createDiv({cls: "spanreed-empty-note", text: "No notifications."});
 			return;
 		}
-		for (const entry of entries) {
+		const {shown, hidden} = inboxPage(entries, this.inboxShowAll);
+		for (const entry of shown) {
 			const item = list.createDiv({
 				cls: "spanreed-inbox-item"
 					+ (surface.inbox.isUnread(entry) ? " is-unread" : ""),
@@ -237,7 +322,19 @@ export class SpanreedView extends ItemView {
 				text: new Date(entry.ts * 1000).toLocaleString(),
 			});
 			const body = item.createDiv({cls: "spanreed-inbox-body"});
-			void renderContentInto(this.app, entryContent(entry), body, this);
+			void renderContentInto(this.app, entryContent(entry), body, component);
+		}
+		if (hidden > 0) {
+			// "Mark all read" and "Clear" still act on everything, not just
+			// what is on screen.
+			const moreButton = list.createEl("button", {
+				cls: "spanreed-inbox-button",
+				text: `Show ${hidden} older`,
+			});
+			moreButton.addEventListener("click", () => {
+				this.inboxShowAll = true;
+				this.render();
+			});
 		}
 	}
 }
