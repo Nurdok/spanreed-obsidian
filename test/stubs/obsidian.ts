@@ -19,6 +19,13 @@ const momentFn: typeof momentNs = (momentNs as any).default ?? momentNs;
 
 export {momentFn as moment};
 
+// What Obsidian's normalizePath does to the paths the tests use: one kind of
+// slash, none doubled, none at either end.
+export function normalizePath(path: string): string {
+	const cleaned = path.replace(/[\\/]+/g, "/").replace(/^\/+|\/+$/g, "");
+	return cleaned === "" ? "/" : cleaned;
+}
+
 // Every Notice the code under test raises, in order. Tests assert on this
 // instead of on a real toast.
 export const notices: string[] = [];
