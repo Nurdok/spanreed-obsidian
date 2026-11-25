@@ -7,6 +7,9 @@ const dailyNotes = vi.hoisted(() => ({
 	createDailyNote: vi.fn(),
 	getDailyNote: vi.fn(),
 	getAllDailyNotes: vi.fn(),
+	getDailyNoteSettings: vi.fn(),
+	DailyNotesFolderMissingError: class DailyNotesFolderMissingError extends Error {
+	},
 }));
 vi.mock('obsidian-daily-notes-interface', () => dailyNotes);
 
@@ -112,17 +115,28 @@ function makeAgent(files: Record<string, string> = {}) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	dailyNotes.getAllDailyNotes.mockReturnValue({});
+	dailyNotes.getDailyNoteSettings.mockReturnValue({folder: 'Daily', format: 'YYYY-MM-DD', template: ''});
+	dailyNotes.createDailyNote.mockImplementation(async (date: any) => ({
+		path: `Daily/${date.format('YYYY-MM-DD')}.md`,
+	}));
 });
 
+// The day a mocked daily-note helper was last asked about, as YYYY-MM-DD.
+function askedAbout(helper: {mock: {calls: any[][]}}): string {
+	const [date] = helper.mock.calls[helper.mock.calls.length - 1];
+	return date.format('YYYY-MM-DD');
+}
+
 describe('generate-daily-note', () => {
-	it('creates today\'s note when it does not exist yet', async () => {
+	it('creates today\'s note when it does not exist yet, and says where it is', async () => {
 		dailyNotes.getDailyNote.mockReturnValue(null);
 		const {agent} = makeAgent();
 
 		const res = await agent.handleCommandGenerateDailyNote();
 
-		expect(res).toEqual({success: true, result: null});
 		expect(dailyNotes.createDailyNote).toHaveBeenCalledTimes(1);
+		const today = askedAbout(dailyNotes.createDailyNote);
+		expect(res).toEqual({success: true, result: {path: `Daily/${today}.md`, created: true}});
 	});
 
 	it('leaves an existing note alone, so the RPC is idempotent', async () => {
@@ -131,7 +145,7 @@ describe('generate-daily-note', () => {
 
 		const res = await agent.handleCommandGenerateDailyNote();
 
-		expect(res).toEqual({success: true, result: null});
+		expect(res).toEqual({success: true, result: {path: 'Daily/2026-08-15.md', created: false}});
 		expect(dailyNotes.createDailyNote).not.toHaveBeenCalled();
 	});
 
@@ -156,6 +170,169 @@ describe('generate-daily-note', () => {
 		const [date] = dailyNotes.getDailyNote.mock.calls[0];
 		expect((date as any).isSame(new Date(), 'day')).toBe(true);
 	});
+
+	it('creates the note of the day it is asked for', async () => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGenerateDailyNote({date: '2026-03-01'});
+
+		expect(askedAbout(dailyNotes.getDailyNote)).toBe('2026-03-01');
+		expect(askedAbout(dailyNotes.createDailyNote)).toBe('2026-03-01');
+		expect(res).toEqual({success: true, result: {path: 'Daily/2026-03-01.md', created: true}});
+	});
+
+	// An older Spanreed sends no date, and an empty one means the same.
+	it.each([undefined, {}, {date: null}, {date: ''}])('takes %j as today', async (params) => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		const {agent} = makeAgent();
+
+		const res = await agent.handleSpanreedRequest({
+			request_id: '1', method: 'generate-daily-note', params,
+		});
+
+		expect(res.success).toBe(true);
+		const [date] = dailyNotes.createDailyNote.mock.calls[0];
+		expect((date as any).isSame(new Date(), 'day')).toBe(true);
+	});
+
+	it.each(['tomorrow', '2026-13-45', '26-3-1', '2026-03-01T10:00', '01/03/2026'])(
+		'refuses %j, which is not a date', async (date) => {
+			const {agent} = makeAgent();
+
+			const res = await agent.handleCommandGenerateDailyNote({date});
+
+			expect(res).toEqual({success: false, result: `not a date: ${date} (expected YYYY-MM-DD)`});
+			expect(dailyNotes.createDailyNote).not.toHaveBeenCalled();
+		});
+
+	// The first daily note of a vault: its folder is made with it.
+	it('creates the note when the folder for daily notes is not there yet', async () => {
+		dailyNotes.getAllDailyNotes.mockImplementation(() => {
+			throw new dailyNotes.DailyNotesFolderMissingError('Failed to find daily notes folder');
+		});
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGenerateDailyNote({date: '2026-03-01'});
+
+		expect(res).toEqual({success: true, result: {path: 'Daily/2026-03-01.md', created: true}});
+	});
+
+	it('fails when the daily notes cannot be listed for another reason', async () => {
+		dailyNotes.getAllDailyNotes.mockImplementation(() => {
+			throw new Error('no vault');
+		});
+		const {agent} = makeAgent();
+
+		const res = await agent.handleSpanreedRequest({
+			request_id: '1', method: 'generate-daily-note', params: {},
+		});
+
+		expect(res).toEqual({success: false, result: 'Request generate-daily-note failed: Error: no vault'});
+		expect(dailyNotes.createDailyNote).not.toHaveBeenCalled();
+	});
+
+	// createDailyNote swallows its own failure: it shows a Notice and returns
+	// nothing. Spanreed has to hear of it all the same.
+	it('fails when the note could not be created', async () => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		dailyNotes.createDailyNote.mockResolvedValue(undefined);
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGenerateDailyNote({date: '2026-03-01'});
+
+		expect(res).toEqual({
+			success: false,
+			result: 'could not create the daily note Daily/2026-03-01.md',
+		});
+	});
+});
+
+describe('get-daily-note', () => {
+	it('says where a note that is there is, as it was found', async () => {
+		// Not where the settings would put a new one: it was moved, or the
+		// settings changed since.
+		dailyNotes.getDailyNote.mockReturnValue({path: 'Daily/2026/2026-03-01.md'});
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGetDailyNote({date: '2026-03-01'});
+
+		expect(askedAbout(dailyNotes.getDailyNote)).toBe('2026-03-01');
+		expect(res).toEqual({success: true, result: {path: 'Daily/2026/2026-03-01.md', exists: true}});
+	});
+
+	it('says where a note that is not there would be made, and makes nothing', async () => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		const {agent, vault} = makeAgent();
+
+		const res = await agent.handleCommandGetDailyNote({date: '2026-03-01'});
+
+		expect(res).toEqual({success: true, result: {path: 'Daily/2026-03-01.md', exists: false}});
+		expect(dailyNotes.createDailyNote).not.toHaveBeenCalled();
+		expect(vault.getFiles()).toEqual([]);
+		expect(vault.folders.size).toBe(0);
+	});
+
+	it.each([
+		// The Daily notes settings as they come, and the path of 1 March 2026.
+		[{folder: 'Daily', format: 'YYYY-MM-DD'}, 'Daily/2026-03-01.md'],
+		[{folder: '', format: 'YYYY-MM-DD'}, '2026-03-01.md'],
+		[{folder: '/', format: 'YYYY-MM-DD'}, '2026-03-01.md'],
+		[{folder: 'Journal/Days/', format: 'DD.MM.YYYY'}, 'Journal/Days/01.03.2026.md'],
+		// A format can name folders of its own.
+		[{folder: 'Journal', format: 'YYYY/MM/YYYY-MM-DD'}, 'Journal/2026/03/2026-03-01.md'],
+		// Nothing set: Obsidian's default.
+		[{folder: undefined, format: undefined}, '2026-03-01.md'],
+		[{folder: 'Daily', format: ''}, 'Daily/2026-03-01.md'],
+	])('follows the Daily notes settings %j', async (settings, path) => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		dailyNotes.getDailyNoteSettings.mockReturnValue(settings);
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGetDailyNote({date: '2026-03-01'});
+
+		expect(res).toEqual({success: true, result: {path, exists: false}});
+	});
+
+	it('names the note that generate-daily-note would create', async () => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		const {agent} = makeAgent();
+
+		const found = await agent.handleCommandGetDailyNote({date: '2026-03-01'});
+		const made = await agent.handleCommandGenerateDailyNote({date: '2026-03-01'});
+
+		expect(found.result.path).toBe(made.result.path);
+	});
+
+	it('takes no date as today', async () => {
+		dailyNotes.getDailyNote.mockReturnValue(null);
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGetDailyNote();
+
+		const [date] = dailyNotes.getDailyNote.mock.calls[0];
+		expect((date as any).isSame(new Date(), 'day')).toBe(true);
+		expect(res.result.exists).toBe(false);
+	});
+
+	it('finds no note when the folder for daily notes is not there', async () => {
+		dailyNotes.getAllDailyNotes.mockImplementation(() => {
+			throw new dailyNotes.DailyNotesFolderMissingError('Failed to find daily notes folder');
+		});
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGetDailyNote({date: '2026-03-01'});
+
+		expect(res).toEqual({success: true, result: {path: 'Daily/2026-03-01.md', exists: false}});
+	});
+
+	it('refuses what is not a date', async () => {
+		const {agent} = makeAgent();
+
+		const res = await agent.handleCommandGetDailyNote({date: 'yesterday'});
+
+		expect(res).toEqual({success: false, result: 'not a date: yesterday (expected YYYY-MM-DD)'});
+	});
 });
 
 describe('method registry', () => {
@@ -163,6 +340,7 @@ describe('method registry', () => {
 		const {agent} = makeAgent();
 		expect(agent.getSupportedMethods()).toEqual(Object.keys(agent.getMethodHandlers()));
 		expect(agent.getSupportedMethods()).toContain('generate-daily-note');
+		expect(agent.getSupportedMethods()).toContain('get-daily-note');
 	});
 });
 

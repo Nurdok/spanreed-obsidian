@@ -1,5 +1,11 @@
-import {App, Modal, TFile, moment} from 'obsidian';
-import {createDailyNote, getAllDailyNotes, getDailyNote} from 'obsidian-daily-notes-interface';
+import {App, Modal, TFile, moment, normalizePath} from 'obsidian';
+import {
+	createDailyNote,
+	DailyNotesFolderMissingError,
+	getAllDailyNotes,
+	getDailyNote,
+	getDailyNoteSettings,
+} from 'obsidian-daily-notes-interface';
 import {Buffer} from "node:buffer"
 import type SpanreedPlugin from "./main";
 
@@ -10,6 +16,13 @@ interface SpanreedRpcRequest {
 	request_id: string;
 	method: string;
 	params: any;
+}
+
+interface DailyNoteParams {
+	// The day, as YYYY-MM-DD. Spanreed sends the day in its user's timezone,
+	// so that the two agree around midnight. When absent (an older Spanreed
+	// sends none), it is today by this machine's clock.
+	date?: string | null;
 }
 
 interface ModifyPropertyParams {
@@ -90,15 +103,85 @@ export class VaultRpcAgent {
 		return undefined
 	}
 
-	async handleCommandGenerateDailyNote(): Promise<SpanreedRpcResponse> {
-		console.log("generating daily note");
-		// Create today's daily note without opening it in the UI. Running the
-		// built-in "daily-notes" command would also open the note in a leaf.
-		const today = moment();
-		if (!getDailyNote(today, getAllDailyNotes())) {
-			await createDailyNote(today);
+	// The day a daily-note request is about, or null if it names none.
+	dailyNoteDate(params?: DailyNoteParams): moment.Moment | null {
+		const date = params?.date;
+		if (date === undefined || date === null || date === "") {
+			return moment();
 		}
-		return {"success": true, "result": null};
+		const parsed = moment(date, "YYYY-MM-DD", true);
+		return parsed.isValid() ? parsed : null;
+	}
+
+	// The daily note of a day, if it is there.
+	findDailyNote(date: moment.Moment): TFile | null {
+		let notes: Record<string, TFile>;
+		try {
+			notes = getAllDailyNotes();
+		} catch (e) {
+			if (e instanceof DailyNotesFolderMissingError) {
+				// The folder for daily notes is not there yet, so no note is.
+				return null;
+			}
+			throw e;
+		}
+		return getDailyNote(date, notes) ?? null;
+	}
+
+	// Where the daily note of a day is made: the folder and the date format
+	// of the Daily notes settings (or of Periodic Notes, when it has them).
+	// This is how createDailyNote names a new note.
+	dailyNotePath(date: moment.Moment): string {
+		const {folder, format} = getDailyNoteSettings();
+		let name = date.format(format || "YYYY-MM-DD");
+		if (!name.endsWith(".md")) {
+			name += ".md";
+		}
+		return normalizePath(`${folder ?? ""}/${name}`);
+	}
+
+	static notADate(params?: DailyNoteParams): SpanreedRpcResponse {
+		return {"success": false, "result": `not a date: ${params?.date} (expected YYYY-MM-DD)`};
+	}
+
+	// Creates the daily note of a day from its template, unless it is there,
+	// and says where it is. An older Spanreed sends no date and reads no
+	// result, so both stay optional.
+	async handleCommandGenerateDailyNote(params?: DailyNoteParams): Promise<SpanreedRpcResponse> {
+		console.log("generating daily note");
+		const date = this.dailyNoteDate(params);
+		if (date === null) {
+			return VaultRpcAgent.notADate(params);
+		}
+		const existing = this.findDailyNote(date);
+		if (existing !== null) {
+			return {"success": true, "result": {"path": existing.path, "created": false}};
+		}
+		// Create the note without opening it in the UI. Running the built-in
+		// "daily-notes" command would also open the note in a leaf.
+		const created = await createDailyNote(date);
+		if (!created) {
+			// createDailyNote reports a failure with a Notice, and returns nothing.
+			return {"success": false, "result": `could not create the daily note ${this.dailyNotePath(date)}`};
+		}
+		return {"success": true, "result": {"path": created.path, "created": true}};
+	}
+
+	// Says where the daily note of a day is, or would be made, and whether
+	// it is there. Creates nothing.
+	async handleCommandGetDailyNote(params?: DailyNoteParams): Promise<SpanreedRpcResponse> {
+		const date = this.dailyNoteDate(params);
+		if (date === null) {
+			return VaultRpcAgent.notADate(params);
+		}
+		const existing = this.findDailyNote(date);
+		return {
+			"success": true,
+			"result": {
+				"path": existing !== null ? existing.path : this.dailyNotePath(date),
+				"exists": existing !== null,
+			},
+		};
 	}
 
 	async handleCommandModifyProperty(params: ModifyPropertyParams): Promise<SpanreedRpcResponse> {
@@ -359,7 +442,8 @@ export class VaultRpcAgent {
 	// wired up.
 	getMethodHandlers(): Record<string, (params: any) => Promise<SpanreedRpcResponse>> {
 		return {
-			"generate-daily-note": () => this.handleCommandGenerateDailyNote(),
+			"generate-daily-note": (params) => this.handleCommandGenerateDailyNote(params),
+			"get-daily-note": (params) => this.handleCommandGetDailyNote(params),
 			"modify-property": (params) => this.handleCommandModifyProperty(params),
 			"query-dataview": (params) => this.handleCommandQueryDataview(params),
 			"read-file": (params) => this.handleCommandReadFile(params),
